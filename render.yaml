@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: legalsuits-web
+    env: docker
+    plan: free
+    dockerfilePath: Dockerfile
+
+  - type: worker
+    name: legalsuits-worker
+    env: docker
+    plan: free
+    dockerfilePath: Dockerfile
+    startCommand: "php worker.php"
+
+databases:
+  - name: legalsuits-postgres
+    engine: postgresql
+    plan: starter
