@@ -20,7 +20,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Skopíruj kód aplikácie do document root
 # Ak chceš ignorovať niektoré súbory, rieš to v .dockerignore
-COPY . /var/www/html
+COPY api/ /var/www/html/
 
 # Nastav vlastníka
 RUN chown -R www-data:www-data /var/www/html
