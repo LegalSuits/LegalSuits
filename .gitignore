@@ -1,5 +1,0 @@
-/api/tmp/
-/vendor/
-/.env
-.env.php
-*.log
