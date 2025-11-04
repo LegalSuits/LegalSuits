@@ -1,27 +1,29 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
-# Render poskytne premennú PORT; ak tu nie je, použij default 80
-: "${PORT:=80}"
-
-# Zmeň Listen port v ports.conf (ak tam je 80)
-if grep -q '^Listen ' /etc/apache2/ports.conf; then
-  sed -ri "s/Listen\s+[0-9]+/Listen ${PORT}/" /etc/apache2/ports.conf
-else
-  echo "Listen ${PORT}" >> /etc/apache2/ports.conf
+# SOURCE apache envvars so variables like APACHE_RUN_DIR are defined
+if [ -f /etc/apache2/envvars ]; then
+  # use dot to source so env vars become available in this shell
+  . /etc/apache2/envvars
 fi
 
-# Upravi VirtualHost z *:80 na *:${PORT}
-if [ -f /etc/apache2/sites-available/000-default.conf ]; then
-  sed -ri "s/<VirtualHost \*:80>/<VirtualHost *:${PORT}>/" /etc/apache2/sites-available/000-default.conf
+# Ensure runtime dir exists (APACHE_RUN_DIR usually /var/run/apache2)
+RUNDIR="${APACHE_RUN_DIR:-/var/run/apache2}"
+mkdir -p "$RUNDIR"
+chown -R "${APACHE_RUN_USER:-www-data}:${APACHE_RUN_GROUP:-www-data}" "$RUNDIR" || true
+
+# If Render (alebo iný) sets PORT env, replace Listen 80 -> Listen $PORT
+if [ -n "$PORT" ]; then
+  # modify ports.conf
+  if [ -f /etc/apache2/ports.conf ]; then
+    sed -i "s/Listen [0-9]\+/Listen ${PORT}/" /etc/apache2/ports.conf || true
+  fi
+  # try to update any enabled vhost files (if present)
+  for f in /etc/apache2/sites-enabled/*.conf; do
+    [ -f "$f" ] || continue
+    sed -i "s/<VirtualHost \*:[0-9]\+>/<VirtualHost *:${PORT}>/g" "$f" || true
+  done
 fi
 
-# Daj pozor: ak máš vlastné apache conf súbory, uprav ich podobne
-
-# Ak index súbory chýbajú, upozorni v logu (diagnostika)
-if [ ! -f /var/www/html/index.php ] && [ ! -f /var/www/html/index.html ]; then
-  echo "WARNING: No index.php or index.html found in /var/www/html — Apache will return 403." >&2
-fi
-
-# Spusti apache v popredí
-exec apache2 -DFOREGROUND
+# Finally exec apache in foreground
+exec apache2 -D FOREGROUND
