@@ -1,21 +1,92 @@
 <?php
-declare(strict_types=1);
-require_once __DIR__ . '/helpers.php';
+// api/process.php - debug verzia, vráti JSON a loguje
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail('Use POST.', 405);
-if (!isset($_FILES['file'])) fail('No file uploaded.', 400);
+header('Content-Type: application/json');
 
-$u = $_FILES['file'];
-if ($u['error'] !== UPLOAD_ERR_OK) fail('Upload error: ' . $u['error'], 400);
+$logFile = __DIR__ . '/tmp/upload.log';
 
-$targetDir = __DIR__ . '/tmp/';
-if (!is_dir($targetDir)) mkdir($targetDir, 0777, true);
-
-$fname = basename($u['name']);
-$target = $targetDir . $fname;
-
-if (!move_uploaded_file($u['tmp_name'], $target)) {
-  fail('Could not save file.', 500);
+// jednoduchý logger
+function dbg($msg) {
+    global $logFile;
+    $t = date('Y-m-d H:i:s');
+    @file_put_contents($logFile, "[$t] " . print_r($msg, true) . PHP_EOL, FILE_APPEND);
 }
 
-ok(['message'=>'Upload OK','file'=>$fname]);
+// základné info
+dbg("=== request start ===");
+dbg(['method'=>$_SERVER['REQUEST_METHOD'],'uri'=>$_SERVER['REQUEST_URI']]);
+dbg(['post'=>$_POST]);
+
+// ensure tmp dir exists and je writeable
+$targetDir = __DIR__ . '/tmp';
+if (!is_dir($targetDir)) {
+    if (!mkdir($targetDir, 0775, true)) {
+        $err = ['error'=>'mkdir_failed','path'=>$targetDir];
+        dbg($err);
+        echo json_encode($err);
+        exit;
+    }
+    // pokúsme sa nastaviť vlastníka (ak posix_getpwuid dostupné)
+    if (function_exists('posix_getpwuid')) {
+        @chown($targetDir, 'www-data');
+        @chgrp($targetDir, 'www-data');
+    }
+}
+dbg(['tmp_exists'=>is_dir($targetDir),'tmp_writable'=>is_writable($targetDir)]);
+
+// php upload limits
+dbg([
+    'upload_max_filesize'=>ini_get('upload_max_filesize'),
+    'post_max_size'=>ini_get('post_max_size'),
+    'max_file_uploads'=>ini_get('max_file_uploads')
+]);
+
+// dump files
+dbg(['_FILES'=>$_FILES]);
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $out = ['status'=>'error','message'=>'Use POST.'];
+    dbg($out);
+    echo json_encode($out);
+    exit;
+}
+
+if (!isset($_FILES['file'])) {
+    $out = ['status'=>'error','message'=>'No file uploaded (no FILES[\"file\"])','files'=>$_FILES];
+    dbg($out);
+    echo json_encode($out);
+    exit;
+}
+
+$f = $_FILES['file'];
+
+dbg(['file_meta'=>$f]);
+
+if ($f['error'] !== UPLOAD_ERR_OK) {
+    $out = ['status'=>'error','message'=>'Upload error','code'=>$f['error']];
+    dbg($out);
+    echo json_encode($out);
+    exit;
+}
+
+$target = $targetDir . '/' . basename($f['name']);
+
+// pokus o presun
+$moved = move_uploaded_file($f['tmp_name'], $target);
+dbg(['move_uploaded_file_result'=>$moved,'tmp_name'=>$f['tmp_name'],'target'=>$target]);
+
+if ($moved) {
+    @chmod($target, 0644);
+    $out = ['status'=>'ok','path'=> $target, 'name'=>$f['name']];
+    dbg($out);
+    echo json_encode($out);
+    exit;
+} else {
+    $err = ['status'=>'error','message'=>'Could not move uploaded file','target'=>$target,'is_writable_tmp'=>is_writable($targetDir)];
+    dbg($err);
+    echo json_encode($err);
+    exit;
+}
