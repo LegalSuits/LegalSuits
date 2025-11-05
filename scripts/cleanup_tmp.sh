@@ -1,73 +1,92 @@
 #!/bin/sh
 # cleanup_tmp.sh
-# Vymaže súbory v $TMP_DIR staršie ako N minút (default 1440 = 24h).
-# Podporuje:
-#   --minutes N    (alebo)  --days D
-#   --dry-run      (iba vypíše, nemaže)
-#
-# Použitie:
-#   bash /usr/local/bin/cleanup_tmp.sh --minutes 60
-#   bash /usr/local/bin/cleanup_tmp.sh --days 1
-#   bash /usr/local/bin/cleanup_tmp.sh --dry-run
+# Vymaže súbory v TMP_DIR staršie než N dní.
+# Podpora parametrov:
+#   --days=N      (počet dní, default 1)
+#   --dir=PATH    (adresár, default /var/www/html/tmp)
+#   --dry-run     (len vypíše, čo by vymazal)
+#   --help        (zobraziť pomoc)
+set -u
 
-set -eu
-
-# Defaulty
-TMP_DIR="${TMP_DIR:-/var/www/html/tmp}"
-MINUTES=1440   # default: 24h
+# Defaults
+TMP_DIR="/var/www/html/tmp"
+DAYS=1
 DRY_RUN=0
 
-# Parse args (very small parser)
-while [ $# -gt 0 ]; do
+usage() {
+  cat <<EOF
+Usage: $0 [--days=N] [--dir=PATH] [--dry-run] [--help]
+
+--days=N     Delete files older than N days (default: 1)
+--dir=PATH   Directory to clean (default: /var/www/html/tmp)
+--dry-run    Don't delete, just print what would be removed
+--help       Show this help
+EOF
+}
+
+# Parse args
+while [ "$#" -gt 0 ]; do
   case "$1" in
-    --minutes)
+    --days=*)
+      DAYS="${1#*=}"
       shift
-      MINUTES="$1"
       ;;
     --days)
+      DAYS="$2"; shift 2
+      ;;
+    --dir=*)
+      TMP_DIR="${1#*=}"
       shift
-      # 1 day = 1440 minutes
-      MINUTES=$(expr "$1" \* 1440)
+      ;;
+    --dir)
+      TMP_DIR="$2"; shift 2
       ;;
     --dry-run)
-      DRY_RUN=1
+      DRY_RUN=1; shift
       ;;
-    --help|-h)
-      echo "Usage: $0 [--minutes N] [--days D] [--dry-run]"
-      exit 0
+    -h|--help)
+      usage; exit 0
       ;;
     *)
-      echo "Unknown arg: $1" >&2
-      exit 2
+      echo "Unknown option: $1"; usage; exit 2
       ;;
   esac
-  shift
 done
 
-# Timestamp
-TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-echo "[$TS] cleanup_tmp.sh starting. TMP_DIR=$TMP_DIR, older than ${MINUTES}min, dry_run=$DRY_RUN"
+# Validate numeric days
+case "$DAYS" in
+  ''|*[!0-9]*)
+    echo "Invalid --days value: $DAYS (must be integer)"; exit 2
+    ;;
+esac
+
+MINUTES=$((DAYS * 1440))
+
+timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
+
+echo "$(timestamp) cleanup_tmp.sh starting. TMP_DIR=${TMP_DIR}, older than ${DAYS} day(s) (${MINUTES} minutes), dry_run=${DRY_RUN}"
 
 if [ ! -d "$TMP_DIR" ]; then
-  echo "[$TS] Dir $TMP_DIR does not exist — nothing to do."
+  echo "$(timestamp) Dir ${TMP_DIR} does not exist, nothing to clean."
   exit 0
 fi
 
-# Find files older than MINUTES and delete (safe: list first)
-echo "[$TS] Finding files older than ${MINUTES} minutes in $TMP_DIR ..."
-# Use -type f to match files only
+echo "$(timestamp) Finding files older than ${MINUTES} minutes in ${TMP_DIR} ..."
 if [ "$DRY_RUN" -eq 1 ]; then
+  # len vypis
   find "$TMP_DIR" -type f -mmin +"$MINUTES" -print
-  echo "[$TS] Dry-run: no files were deleted."
-  exit 0
+else
+  # vypis a zmaz
+  find "$TMP_DIR" -type f -mmin +"$MINUTES" -print -exec rm -f {} \;
 fi
 
-# Delete files (print each deleted file)
-find "$TMP_DIR" -type f -mmin +"$MINUTES" -print -exec rm -f {} \;
+# Volitelně odstrániť prázdne adresáre
+echo "$(timestamp) Removing empty directories (if any) under ${TMP_DIR} ..."
+if [ "$DRY_RUN" -eq 1 ]; then
+  find "$TMP_DIR" -type d -empty -print
+else
+  find "$TMP_DIR" -type d -empty -delete
+fi
 
-# Optionally remove empty subdirectories
-echo "[$TS] Removing empty directories (if any) under $TMP_DIR ..."
-find "$TMP_DIR" -type d -empty -delete || true
-
-echo "[$TS] cleanup_tmp.sh finished."
+echo "$(timestamp) cleanup_tmp.sh finished."
 exit 0
