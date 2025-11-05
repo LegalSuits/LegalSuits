@@ -1,10 +1,55 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Upload test</title></head>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Upload test</title>
+  <style>
+    body { font-family: Tahoma, Arial, sans-serif; padding: 20px; }
+    #result { margin-top: 12px; white-space: pre-wrap; }
+  </style>
+</head>
 <body>
-<h1>Upload test</h1>
-<form method="post" enctype="multipart/form-data" action="/process.php">
-  <input type="file" name="file" />
-  <button type="submit">Upload</button>
-</form>
+  <h1>Upload test</h1>
+
+  <form id="uploadForm" method="post" enctype="multipart/form-data" action="/process.php">
+    <input type="file" name="file" id="fileInput" />
+    <button type="submit">Upload</button>
+  </form>
+
+  <div id="result"></div>
+
+<script>
+document.getElementById('uploadForm').addEventListener('submit', async function(e){
+  e.preventDefault();
+  const fileInput = document.getElementById('fileInput');
+  const result = document.getElementById('result');
+  result.textContent = 'Uploading...';
+
+  if (!fileInput.files || fileInput.files.length === 0) {
+    result.textContent = 'Vyber súbor.';
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+
+  try {
+    const resp = await fetch('/process.php', {
+      method: 'POST',
+      body: fd
+    });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+      // zobrazíme info a link na uložený súbor
+      result.innerHTML = 'OK\n\nNázov: ' + data.name + '\nCesta: ' + data.path +
+        '\n\nOtvor súbor: <a href="' + data.url + '" target="_blank"> ' + data.url + '</a>';
+    } else {
+      result.textContent = 'Chyba: ' + (data.message || JSON.stringify(data));
+    }
+  } catch (err) {
+    result.textContent = 'Network/Server error: ' + err.message;
+  }
+});
+</script>
 </body>
 </html>
