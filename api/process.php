@@ -1,18 +1,25 @@
 <?php
 declare(strict_types=1);
-
-// process.php - spracovanie uploadu súboru, uloženie do ./tmp a JSON odpoveď
-
 header('Content-Type: application/json; charset=utf-8');
 
-// iba POST
+// CONFIG
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_PAGES = 50; // maximum pages allowed (null ak nechceme obmedzovať)
+const ALLOWED_MIMES = [
+    'image/png',
+    'image/jpeg',
+    'application/pdf',
+    'application/msword', // .doc
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+    'text/plain'
+];
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(400);
     echo json_encode(['status' => 'error', 'message' => 'Use POST.']);
     exit;
 }
 
-// skontroluj existenciu pola
 if (!isset($_FILES['file'])) {
     http_response_code(400);
     echo json_encode(['status' => 'error', 'message' => 'No file uploaded.']);
@@ -20,31 +27,64 @@ if (!isset($_FILES['file'])) {
 }
 
 $file = $_FILES['file'];
-
-// bežné chyby PHP uploadu
 if (!isset($file['error']) || is_array($file['error'])) {
-    http_response_code(400);
     echo json_encode(['status' => 'error', 'message' => 'Invalid upload parameters.']);
     exit;
 }
-
 if ($file['error'] !== UPLOAD_ERR_OK) {
-    $msg = 'Upload error code: ' . $file['error'];
-    echo json_encode(['status' => 'error', 'message' => $msg]);
+    echo json_encode(['status' => 'error', 'message' => 'Upload error code: ' . $file['error']]);
     exit;
 }
 
-// overit, ci je to doopravdy upload
+// size check
+if ($file['size'] > MAX_FILE_BYTES) {
+    echo json_encode(['status' => 'error', 'message' => 'File too large. Max allowed: ' . (MAX_FILE_BYTES / (1024*1024)) . ' MB']);
+    exit;
+}
+
+// ensure uploaded via HTTP POST
 if (!is_uploaded_file($file['tmp_name'])) {
     echo json_encode(['status' => 'error', 'message' => 'File not uploaded via HTTP POST.']);
     exit;
 }
 
-// vytvorenie (alebo overenie) tmp adresara relativne k tomuto skriptu
-$baseDir = __DIR__;                // api/
-$tmpDir = $baseDir . DIRECTORY_SEPARATOR . 'tmp';
+// determine mime type using finfo
+$finfo = finfo_open(FILEINFO_MIME_TYPE);
+$mime = $finfo ? finfo_file($finfo, $file['tmp_name']) : null;
+if ($finfo) finfo_close($finfo);
 
-// ak tmp neexistuje, vytvor ho (and set permissions)
+// extension and sanitized name (basic)
+$origName = $file['name'] ?? 'upload';
+$origName = str_replace(["\0", "/", "\\", ".."], '_', $origName);
+$origName = trim($origName);
+$trans = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $origName);
+if ($trans !== false) $origName = $trans;
+$origName = preg_replace('/[^A-Za-z0-9\-\._ ]+/', '', $origName);
+$origName = str_replace(' ', '_', $origName);
+if ($origName === '') $origName = 'upload_' . bin2hex(random_bytes(6));
+
+$ext = pathinfo($origName, PATHINFO_EXTENSION);
+$base = pathinfo($origName, PATHINFO_FILENAME);
+$timestamp = date('Ymd_His');
+$targetName = $base . '_' . $timestamp . ($ext ? '.' . $ext : '');
+
+// mime/extension allowed check
+$allowed = true;
+if ($mime && !in_array($mime, ALLOWED_MIMES, true)) $allowed = false;
+if (!$mime) {
+    // pokus rozpoznat z extension
+    $lower = strtolower($ext);
+    $extAllowed = in_array($lower, ['pdf','doc','docx','txt','png','jpg','jpeg'], true);
+    if (!$extAllowed) $allowed = false;
+}
+if (!$allowed) {
+    echo json_encode(['status' => 'error', 'message' => 'File type not allowed. Detected MIME: ' . ($mime ?? 'unknown')]);
+    exit;
+}
+
+// ensure tmp directory exists (relative to api/)
+$baseDir = __DIR__;
+$tmpDir = $baseDir . DIRECTORY_SEPARATOR . 'tmp';
 if (!is_dir($tmpDir)) {
     if (!mkdir($tmpDir, 0755, true) && !is_dir($tmpDir)) {
         echo json_encode(['status' => 'error', 'message' => 'Cannot create tmp dir.']);
@@ -52,59 +92,77 @@ if (!is_dir($tmpDir)) {
     }
 }
 
-// sanitizuj nazov suboru (odstranime diakritiku a nebezpecne znaky)
-$originalName = $file['name'];
-// nahradenie diakritiky - jednoduché odtranenie UTF znakov na ASCII fallback
-// Lepšie riešenie je iconv, ale nie vždy je iconv povolený. Skúsime kombináciu:
-$san = $originalName;
-// nahradíme lomítka, nulové byty atď.
-$san = str_replace(["\0", "/", "\\", ".."], '_', $san);
-// odstránime riadky kontroly
-$san = trim($san);
-
-// odstránime diakritiku cez translit (ak možno)
-$trans = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $san);
-if ($trans !== false) {
-    $san = $trans;
-}
-
-// teraz povolíme iba znaky, písmena, čísla, pomlčky, bodky a podtržníky
-$san = preg_replace('/[^A-Za-z0-9\-\._ ]+/', '', $san);
-// nahraď medzery podtržníkom
-$san = str_replace(' ', '_', $san);
-// skráť názov ak je príliš dlhý
-$san = mb_substr($san, 0, 200);
-
-// ak po sanitizacii nic nezostalo, vytvor fallback meno
-if ($san === '') {
-    $san = 'upload_' . bin2hex(random_bytes(6));
-}
-
-// pridáme timestamp, aby sa minimalizovala kolízia mien
-$ext = pathinfo($san, PATHINFO_EXTENSION);
-$base = pathinfo($san, PATHINFO_FILENAME);
-$timestamp = date('Ymd_His');
-$targetName = $base . '_' . $timestamp . ($ext ? '.' . $ext : '');
-
 $targetPath = $tmpDir . DIRECTORY_SEPARATOR . $targetName;
 
-// presunieme subor
+// move file
 if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
     echo json_encode(['status' => 'error', 'message' => 'Unable to move uploaded file.']);
     exit;
 }
-
-// nastav pristupne prava
 @chmod($targetPath, 0644);
 
-// priprav URL pre prezeranie cez web (relativne k document root)
+// try to determine page count for PDF/DOCX (best-effort)
+$pages = null;
+
+function get_pdf_pages(string $path) {
+    // prefer pdfinfo if available
+    if (function_exists('shell_exec')) {
+        $out = @shell_exec('pdfinfo ' . escapeshellarg($path) . ' 2>/dev/null');
+        if ($out && preg_match('/^Pages:\s+(\d+)/mi', $out, $m)) {
+            return (int)$m[1];
+        }
+    }
+    // fallback: simple grep for /Count in file content (not 100% reliable)
+    $contents = @file_get_contents($path, false, null, 0, 2000000); // prvých 2MB
+    if ($contents && preg_match('/\/Count\s+(\d+)/', $contents, $m)) {
+        return (int)$m[1];
+    }
+    return null;
+}
+
+function get_docx_pages(string $path) {
+    if (!class_exists('ZipArchive')) return null;
+    $zip = new ZipArchive();
+    if ($zip->open($path) === true) {
+        $idx = $zip->locateName('docProps/app.xml', ZIPARCHIVE::FL_NOCASE);
+        if ($idx !== false) {
+            $xml = $zip->getFromIndex($idx);
+            if ($xml && preg_match('/<Pages.*?>(\d+)<\/Pages>/', $xml, $m)) {
+                $zip->close();
+                return (int)$m[1];
+            }
+        }
+        $zip->close();
+    }
+    return null;
+}
+
+$lowerExt = strtolower($ext);
+if ($lowerExt === 'pdf') {
+    $pages = get_pdf_pages($targetPath);
+} elseif ($lowerExt === 'docx') {
+    $pages = get_docx_pages($targetPath);
+}
+
+// check pages limit
+if (defined('MAX_PAGES') && MAX_PAGES !== null && $pages !== null) {
+    if ($pages > MAX_PAGES) {
+        // odstranime ulozeny subor a vratime chybu
+        @unlink($targetPath);
+        echo json_encode(['status' => 'error', 'message' => 'Document has too many pages (' . $pages . '). Max allowed ' . MAX_PAGES]);
+        exit;
+    }
+}
+
+// prepare public url (relative)
 $publicUrl = '/tmp/' . rawurlencode($targetName);
 
-// vratime json s informaciami
 echo json_encode([
     'status' => 'ok',
-    'path' => $targetPath,       // interná cesta (uľahčí debugging)
+    'path' => $targetPath,
     'name' => $targetName,
-    'url'  => $publicUrl
+    'pages' => $pages,
+    'mime' => $mime,
+    'url' => $publicUrl
 ]);
 exit;
